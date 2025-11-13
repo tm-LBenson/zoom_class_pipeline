@@ -6,6 +6,7 @@ function App() {
   const [recordings, setRecordings] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [filterText, setFilterText] = useState("");
+  const [selectedLevel, setSelectedLevel] = useState("All");
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -54,19 +55,35 @@ function App() {
     };
   }, []);
 
+  const availableLevels = useMemo(() => {
+    const levels = new Set();
+    recordings.forEach((rec) => {
+      if (rec.level) {
+        levels.add(rec.level);
+      }
+    });
+    const arr = Array.from(levels);
+    arr.sort();
+    return arr;
+  }, [recordings]);
 
   const filteredRecordings = useMemo(() => {
     const query = filterText.trim().toLowerCase();
-    if (!query) {
-      return recordings;
+
+    let base = recordings;
+    if (selectedLevel && selectedLevel !== "All") {
+      base = base.filter((rec) => rec.level === selectedLevel);
     }
-    return recordings.filter((recording) => {
-      const text = `${recording.topic || ""} ${
-        recording.start || ""
-      }`.toLowerCase();
+
+    if (!query) {
+      return base;
+    }
+
+    return base.filter((rec) => {
+      const text = `${rec.topic || ""} ${rec.start || ""}`.toLowerCase();
       return text.includes(query);
     });
-  }, [recordings, filterText]);
+  }, [recordings, filterText, selectedLevel]);
 
   const activeRecording = useMemo(() => {
     if (!filteredRecordings.length) {
@@ -87,12 +104,31 @@ function App() {
     <div className="app">
       <header className="appHeader">
         <h1 className="appTitle">Class replays</h1>
-        <input
-          className="searchInput"
-          placeholder="Filter by date or title"
-          value={filterText}
-          onChange={(event) => setFilterText(event.target.value)}
-        />
+        <div className="headerControls">
+          {availableLevels.length > 1 && (
+            <select
+              className="levelSelect"
+              value={selectedLevel}
+              onChange={(event) => setSelectedLevel(event.target.value)}
+            >
+              <option value="All">All levels</option>
+              {availableLevels.map((level) => (
+                <option
+                  key={level}
+                  value={level}
+                >
+                  {level}
+                </option>
+              ))}
+            </select>
+          )}
+          <input
+            className="searchInput"
+            placeholder="Filter by date or title"
+            value={filterText}
+            onChange={(event) => setFilterText(event.target.value)}
+          />
+        </div>
       </header>
       <div className="appMain">
         <RecordingList
