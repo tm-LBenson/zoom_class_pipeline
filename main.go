@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -17,13 +18,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-type Config struct {
+type AppConfig struct {
 	WatchDir           string `json:"watchDir"`
 	Bucket             string `json:"bucket"`
 	Region             string `json:"region"`
-	Prefix             string `json:"prefix"`
+	VideoPrefix        string `json:"videoPrefix"`
+	IndexKey           string `json:"indexKey"`
 	BaseURL            string `json:"baseUrl"`
-	JSONPath           string `json:"jsonPath"`
 	TopicPrefix        string `json:"topicPrefix"`
 	AWSAccessKeyID     string `json:"awsAccessKeyId"`
 	AWSSecretAccessKey string `json:"awsSecretAccessKey"`
@@ -38,21 +39,21 @@ type Recording struct {
 	File     string `json:"file"`
 }
 
-func defaultConfig() Config {
-	return Config{
+func defaultConfig() AppConfig {
+	return AppConfig{
 		WatchDir:           "/path/to/zoom/recordings",
 		Bucket:             "codex-recordings",
 		Region:             "us-east-1",
-		Prefix:             "level1",
+		VideoPrefix:        "level1",
+		IndexKey:           "level1/recordings.json",
 		BaseURL:            "",
-		JSONPath:           "./recordings.json",
 		TopicPrefix:        "Level 1",
 		AWSAccessKeyID:     "YOUR_ACCESS_KEY_ID",
 		AWSSecretAccessKey: "YOUR_SECRET_ACCESS_KEY",
 	}
 }
 
-func loadConfig() Config {
+func loadConfig() AppConfig {
 	path := os.Getenv("CONFIG_PATH")
 	if path == "" {
 		path = "config.json"
@@ -72,12 +73,12 @@ func loadConfig() Config {
 	if err != nil {
 		log.Fatal(err)
 	}
-	var cfg Config
+	var cfg AppConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		log.Fatal(err)
 	}
-	if cfg.WatchDir == "" || cfg.Bucket == "" || cfg.Region == "" || cfg.JSONPath == "" {
-		log.Fatal("watchDir, bucket, region, jsonPath are required in config.json")
+	if cfg.WatchDir == "" || cfg.Bucket == "" || cfg.Region == "" || cfg.IndexKey == "" {
+		log.Fatal("watchDir, bucket, region, indexKey are required in config.json")
 	}
 	if cfg.TopicPrefix == "" {
 		cfg.TopicPrefix = "Class"
@@ -91,14 +92,26 @@ func loadConfig() Config {
 	return cfg
 }
 
-func loadRecordings(path string) []Recording {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		if err := os.WriteFile(path, []byte("[]\n"), 0644); err != nil {
-			log.Fatal(err)
-		}
+func newS3Client(region string) *s3.Client {
+	ctx := context.Background()
+	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		log.Fatal(err)
+	}
+	return s3.NewFromConfig(awsCfg)
+}
+
+func loadRecordingsFromS3(ctx context.Context, client *s3.Client, cfg AppConfig) []Recording {
+	out, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(cfg.Bucket),
+		Key:    aws.String(cfg.IndexKey),
+	})
+	if err != nil {
+		log.Println("starting with empty index:", err)
 		return []Recording{}
 	}
+	defer out.Body.Close()
+	data, err := io.ReadAll(out.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -112,36 +125,23 @@ func loadRecordings(path string) []Recording {
 	return items
 }
 
-func saveRecordings(path string, items []Recording) {
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Fatal(err)
-		}
-	}
-	tmp := path + ".tmp"
+func saveRecordingsToS3(ctx context.Context, client *s3.Client, cfg AppConfig, items []Recording) {
 	data, err := json.MarshalIndent(items, "", "  ")
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		log.Fatal(err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func newS3Client(region string) *s3.Client {
-	ctx := context.Background()
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(cfg.Bucket),
+		Key:         aws.String(cfg.IndexKey),
+		Body:        strings.NewReader(string(data)),
+		ContentType: aws.String("application/json"),
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	return s3.NewFromConfig(awsCfg)
 }
 
-func buildBaseURL(cfg Config) string {
+func buildBaseURL(cfg AppConfig) string {
 	if cfg.BaseURL != "" {
 		return strings.TrimRight(cfg.BaseURL, "/")
 	}
@@ -158,7 +158,7 @@ func existingFiles(items []Recording) map[string]bool {
 	return m
 }
 
-func isStableFile(info os.FileInfo) bool {
+func isStableFile(info fs.FileInfo) bool {
 	if info.IsDir() {
 		return false
 	}
@@ -205,7 +205,7 @@ func listNewFiles(root string, known map[string]bool) []string {
 	return out
 }
 
-func makeKey(cfg Config, path string, info os.FileInfo) string {
+func makeKey(cfg AppConfig, path string, info fs.FileInfo) string {
 	base := filepath.Base(path)
 	parent := filepath.Base(filepath.Dir(path))
 	parts := strings.Split(parent, " ")
@@ -216,14 +216,14 @@ func makeKey(cfg Config, path string, info os.FileInfo) string {
 	if date == "" {
 		date = info.ModTime().UTC().Format("2006-01-02")
 	}
-	prefix := strings.Trim(cfg.Prefix, "/")
+	prefix := strings.Trim(cfg.VideoPrefix, "/")
 	if prefix != "" {
 		return fmt.Sprintf("%s/%s/%s", prefix, date, base)
 	}
 	return fmt.Sprintf("%s/%s", date, base)
 }
 
-func uploadFile(ctx context.Context, client *s3.Client, cfg Config, path string) (string, error) {
+func uploadFile(ctx context.Context, client *s3.Client, cfg AppConfig, path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
@@ -243,11 +243,10 @@ func uploadFile(ctx context.Context, client *s3.Client, cfg Config, path string)
 		return "", err
 	}
 	baseURL := buildBaseURL(cfg)
-	link := fmt.Sprintf("%s/%s", baseURL, key)
-	return link, nil
+	return fmt.Sprintf("%s/%s", baseURL, key), nil
 }
 
-func addRecording(items []Recording, cfg Config, filePath string, link string) []Recording {
+func addRecording(items []Recording, cfg AppConfig, filePath string, link string) []Recording {
 	info, err := os.Stat(filePath)
 	if err != nil {
 		log.Println("stat error after upload", err)
@@ -274,15 +273,15 @@ func addRecording(items []Recording, cfg Config, filePath string, link string) [
 
 func main() {
 	cfg := loadConfig()
-	items := loadRecordings(cfg.JSONPath)
+	client := newS3Client(cfg.Region)
+	ctx := context.Background()
+	items := loadRecordingsFromS3(ctx, client, cfg)
 	known := existingFiles(items)
 	files := listNewFiles(cfg.WatchDir, known)
 	if len(files) == 0 {
 		log.Println("no new files")
 		return
 	}
-	client := newS3Client(cfg.Region)
-	ctx := context.Background()
 	updated := items
 	for _, path := range files {
 		log.Println("uploading", path)
@@ -293,6 +292,6 @@ func main() {
 		}
 		updated = addRecording(updated, cfg, path, link)
 	}
-	saveRecordings(cfg.JSONPath, updated)
-	log.Println("updated recordings.json")
+	saveRecordingsToS3(ctx, client, cfg, updated)
+	log.Println("updated", cfg.IndexKey)
 }

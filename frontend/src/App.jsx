@@ -15,7 +15,12 @@ function App() {
     async function loadRecordings() {
       setLoading(true);
       try {
-        const response = await fetch("recordings.json", { cache: "no-store" });
+        const params = new URLSearchParams(window.location.search);
+        const queryFeed = params.get("feed");
+        const defaultFeed = import.meta.env.VITE_FEED_URL || "recordings.json";
+        const feedUrl = queryFeed || defaultFeed;
+
+        const response = await fetch(feedUrl, { cache: "no-store" });
         if (!response.ok) {
           throw new Error("Failed to load recordings");
         }
@@ -48,6 +53,7 @@ function App() {
       cancelled = true;
     };
   }, []);
+
 
   const filteredRecordings = useMemo(() => {
     const query = filterText.trim().toLowerCase();
