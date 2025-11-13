@@ -18,14 +18,12 @@ function App() {
       try {
         const params = new URLSearchParams(window.location.search);
         const queryFeed = params.get("feed");
-        const defaultFeed = import.meta.env.BASE_URL
-          ? `${import.meta.env.BASE_URL.replace(/\/+$/, "")}/recordings.json`
-          : import.meta.env.VITE_FEED_URL || "recordings.json";
+        const defaultFeed = import.meta.env.VITE_FEED_URL || "recordings.json";
         const feedUrl = queryFeed || defaultFeed;
 
         const response = await fetch(feedUrl, { cache: "no-store" });
         if (!response.ok) {
-          throw new Error("Failed to load recordings");
+          throw new Error(`Failed to load recordings (${response.status})`);
         }
 
         const data = await response.json();
@@ -36,12 +34,16 @@ function App() {
           setRecordings(items);
           if (items.length > 0) {
             setSelectedId(items[0].id);
+          } else {
+            setSelectedId(null);
           }
           setErrorMessage("");
         }
       } catch (error) {
         if (!cancelled) {
           setErrorMessage(error.message || "Failed to load recordings");
+          setRecordings([]);
+          setSelectedId(null);
         }
       } finally {
         if (!cancelled) {
@@ -53,7 +55,7 @@ function App() {
     loadRecordings();
 
     return () => {
-      cancelled = false;
+      cancelled = true;
     };
   }, []);
 
@@ -88,7 +90,7 @@ function App() {
   }, [recordings, filterText, selectedLevel]);
 
   const activeRecording = useMemo(() => {
-    if (!filteredRecordings.length) {
+    if (!filteredRecordings || filteredRecordings.length === 0) {
       return null;
     }
     if (!selectedId) {
