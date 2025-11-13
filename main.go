@@ -24,7 +24,6 @@ type AppConfig struct {
 	Bucket             string `json:"bucket"`
 	Region             string `json:"region"`
 	VideoPrefix        string `json:"videoPrefix"`
-	IndexKey           string `json:"indexKey"`
 	BaseURL            string `json:"baseUrl"`
 	TopicPrefix        string `json:"topicPrefix"`
 	AWSAccessKeyID     string `json:"awsAccessKeyId"`
@@ -41,13 +40,14 @@ type Recording struct {
 	File     string `json:"file"`
 }
 
+const indexKey = "recordings.json"
+
 func defaultConfig() AppConfig {
 	return AppConfig{
 		WatchDir:           "/path/to/zoom/recordings",
-		Bucket:             "codex-recordings",
+		Bucket:             "codex-recordings-yourname",
 		Region:             "us-east-1",
 		VideoPrefix:        "level1",
-		IndexKey:           "level1/recordings.json",
 		BaseURL:            "",
 		TopicPrefix:        "Level 1",
 		AWSAccessKeyID:     "YOUR_ACCESS_KEY_ID",
@@ -55,11 +55,20 @@ func defaultConfig() AppConfig {
 	}
 }
 
-func loadConfig() AppConfig {
-	path := os.Getenv("CONFIG_PATH")
-	if path == "" {
-		path = "config.json"
+func defaultConfigPath() string {
+	if p := os.Getenv("CONFIG_PATH"); p != "" {
+		return p
 	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "config.json"
+	}
+	dir := filepath.Dir(exe)
+	return filepath.Join(dir, "config.json")
+}
+
+func loadConfig() AppConfig {
+	path := defaultConfigPath()
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -71,7 +80,8 @@ func loadConfig() AppConfig {
 		if err := os.WriteFile(path, b, 0600); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println("config.json created. Fill in your values and run this program again.")
+		fmt.Println("config.json created at", path)
+		fmt.Println("Fill in your values and run this program again.")
 		os.Exit(0)
 	}
 	if err != nil {
@@ -83,11 +93,14 @@ func loadConfig() AppConfig {
 		log.Fatal(err)
 	}
 
-	if cfg.WatchDir == "" || cfg.Bucket == "" || cfg.Region == "" || cfg.IndexKey == "" {
-		log.Fatal("watchDir, bucket, region, indexKey are required in config.json")
+	if cfg.WatchDir == "" || cfg.Bucket == "" || cfg.Region == "" {
+		log.Fatal("watchDir, bucket, and region are required in config.json")
 	}
 	if cfg.TopicPrefix == "" {
 		cfg.TopicPrefix = "Class"
+	}
+	if cfg.VideoPrefix == "" {
+		cfg.VideoPrefix = "level1"
 	}
 	if cfg.AWSAccessKeyID != "" {
 		os.Setenv("AWS_ACCESS_KEY_ID", cfg.AWSAccessKeyID)
@@ -108,13 +121,20 @@ func newS3Client(region string) *s3.Client {
 	return s3.NewFromConfig(awsCfg)
 }
 
+func buildBaseURL(cfg AppConfig) string {
+	if cfg.BaseURL != "" {
+		return strings.TrimRight(cfg.BaseURL, "/")
+	}
+	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com", cfg.Bucket, cfg.Region)
+}
+
 func loadRecordingsFromS3(ctx context.Context, client *s3.Client, cfg AppConfig) []Recording {
 	out, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(cfg.Bucket),
-		Key:    aws.String(cfg.IndexKey),
+		Key:    aws.String(indexKey),
 	})
 	if err != nil {
-		log.Println("no existing index at", cfg.IndexKey, "– starting with empty list")
+		log.Println("no existing index at", indexKey, "starting with empty list")
 		return []Recording{}
 	}
 	defer out.Body.Close()
@@ -141,20 +161,13 @@ func saveRecordingsToS3(ctx context.Context, client *s3.Client, cfg AppConfig, i
 	}
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.Bucket),
-		Key:         aws.String(cfg.IndexKey),
+		Key:         aws.String(indexKey),
 		Body:        bytes.NewReader(data),
 		ContentType: aws.String("application/json"),
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-}
-
-func buildBaseURL(cfg AppConfig) string {
-	if cfg.BaseURL != "" {
-		return strings.TrimRight(cfg.BaseURL, "/")
-	}
-	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com", cfg.Bucket, cfg.Region)
 }
 
 func existingFiles(items []Recording) map[string]bool {
@@ -295,12 +308,11 @@ func main() {
 	items := loadRecordingsFromS3(ctx, client, cfg)
 	known := existingFiles(items)
 	files := listNewFiles(cfg.WatchDir, known)
-
 	updated := items
 
 	if len(files) == 0 && len(updated) == 0 {
 		saveRecordingsToS3(ctx, client, cfg, updated)
-		log.Println("no recordings found in", cfg.WatchDir, "- created empty index at", cfg.IndexKey)
+		log.Println("no recordings found in", cfg.WatchDir, "created empty index at", indexKey)
 		return
 	}
 
@@ -320,5 +332,5 @@ func main() {
 	}
 
 	saveRecordingsToS3(ctx, client, cfg, updated)
-	log.Println("updated", cfg.IndexKey)
+	log.Println("updated", indexKey)
 }
