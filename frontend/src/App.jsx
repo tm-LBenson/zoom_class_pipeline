@@ -18,7 +18,9 @@ function App() {
       try {
         const params = new URLSearchParams(window.location.search);
         const queryFeed = params.get("feed");
-        const defaultFeed = import.meta.env.VITE_FEED_URL || "recordings.json";
+        const defaultFeed = import.meta.env.BASE_URL
+          ? `${import.meta.env.BASE_URL.replace(/\/+$/, "")}/recordings.json`
+          : import.meta.env.VITE_FEED_URL || "recordings.json";
         const feedUrl = queryFeed || defaultFeed;
 
         const response = await fetch(feedUrl, { cache: "no-store" });
@@ -51,7 +53,7 @@ function App() {
     loadRecordings();
 
     return () => {
-      cancelled = true;
+      cancelled = false;
     };
   }, []);
 
@@ -104,31 +106,6 @@ function App() {
     <div className="app">
       <header className="appHeader">
         <h1 className="appTitle">Class replays</h1>
-        <div className="headerControls">
-          {availableLevels.length > 1 && (
-            <select
-              className="levelSelect"
-              value={selectedLevel}
-              onChange={(event) => setSelectedLevel(event.target.value)}
-            >
-              <option value="All">All levels</option>
-              {availableLevels.map((level) => (
-                <option
-                  key={level}
-                  value={level}
-                >
-                  {level}
-                </option>
-              ))}
-            </select>
-          )}
-          <input
-            className="searchInput"
-            placeholder="Filter by date or title"
-            value={filterText}
-            onChange={(event) => setFilterText(event.target.value)}
-          />
-        </div>
       </header>
       <div className="appMain">
         <RecordingList
@@ -136,7 +113,12 @@ function App() {
           selectedId={activeRecording ? activeRecording.id : null}
           loading={loading}
           errorMessage={errorMessage}
+          levels={availableLevels}
+          selectedLevel={selectedLevel}
+          filterText={filterText}
           onSelect={handleSelect}
+          onSelectLevel={setSelectedLevel}
+          onFilterChange={setFilterText}
         />
         <Player recording={activeRecording} />
       </div>
