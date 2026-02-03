@@ -60,11 +60,15 @@ func defaultConfigPath() string {
 		return p
 	}
 	exe, err := os.Executable()
-	if err != nil {
-		return "config.json"
+	if err == nil {
+		exePath := filepath.Clean(exe)
+		if strings.Contains(exePath, "go-build") {
+			return "config.json"
+		}
+		dir := filepath.Dir(exePath)
+		return filepath.Join(dir, "config.json")
 	}
-	dir := filepath.Dir(exe)
-	return filepath.Join(dir, "config.json")
+	return "config.json"
 }
 
 func loadConfig() AppConfig {
