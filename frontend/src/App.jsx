@@ -2,11 +2,29 @@ import { useEffect, useMemo, useState } from "react";
 import RecordingList from "./components/RecordingList";
 import Player from "./components/Player";
 
+function chooseLatestLevel(levels) {
+  if (!levels || levels.length === 0) return "All";
+
+  const scored = levels.map((level) => {
+    const match = level.match(/(\d+)/);
+    const n = match ? parseInt(match[1], 10) : 0;
+    return { level, score: n };
+  });
+
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.level.localeCompare(b.level);
+  });
+
+  return scored[0].level;
+}
+
 function App() {
   const [recordings, setRecordings] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [filterText, setFilterText] = useState("");
   const [selectedLevel, setSelectedLevel] = useState("All");
+  const [levelInitialized, setLevelInitialized] = useState(false);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [theme, setTheme] = useState(() => {
@@ -86,6 +104,15 @@ function App() {
     arr.sort();
     return arr;
   }, [recordings]);
+
+  useEffect(() => {
+    if (levelInitialized) return;
+    if (availableLevels.length === 0) return;
+
+    const defaultLevel = chooseLatestLevel(availableLevels);
+    setSelectedLevel(defaultLevel);
+    setLevelInitialized(true);
+  }, [availableLevels, levelInitialized]);
 
   const filteredRecordings = useMemo(() => {
     const query = filterText.trim().toLowerCase();
